@@ -17,6 +17,7 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>planning</exec_depend>   <!-- obstacle_spliner_node (race.launch.py avoid:=true) -->
   <exec_depend>perception</exec_depend>   <!-- perception.tracks, localization.launch.py -->
 

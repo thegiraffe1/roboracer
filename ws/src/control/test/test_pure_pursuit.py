@@ -20,6 +20,7 @@ from ackermann_msgs.msg import AckermannDriveStamped  # noqa: E402
 from geometry_msgs.msg import PoseStamped  # noqa: E402
 from nav_msgs.msg import Path  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
+from visualization_msgs.msg import Marker, MarkerArray  # noqa: E402
 
 SPEED_SCALE = 0.5
 DOMAIN = random.randint(1, 101)  # not 0: the live stack (bridge, sim car) runs there
@@ -103,6 +104,9 @@ class Driver:
         self.pub = node.create_publisher(PoseStamped, '/tracked_pose', 10)
         self.drives = []
         self.sub = node.create_subscription(AckermannDriveStamped, '/drive', self.drives.append, 10)
+        self.markers = []
+        self.marker_sub = node.create_subscription(
+            MarkerArray, '/pure_pursuit/markers', self.markers.append, 10)
 
     def wait_for_node(self, proc, timeout=20.0):
         end = time.time() + timeout
@@ -136,6 +140,7 @@ class Driver:
     def close(self):
         self.node.destroy_publisher(self.pub)
         self.node.destroy_subscription(self.sub)
+        self.node.destroy_subscription(self.marker_sub)
 
 
 @pytest.fixture
@@ -178,6 +183,29 @@ def test_straight(run):
     right = driver.drive(5.0, -0.5, 0.0)
     assert right.steering_angle > 0.0
     assert driver.drive(5.0, 0.0, 0.0).steering_angle == pytest.approx(0.0, abs=1e-6)
+
+
+def test_visualization_markers(run):
+    driver, _ = run('straight')
+    yaw = 0.2
+    drive = driver.drive(5.0, 0.5, yaw)
+    assert driver.markers
+    target, arrow = driver.markers[-1].markers
+    assert (target.id, arrow.id) == (0, 1)
+    assert target.type == Marker.SPHERE and arrow.type == Marker.ARROW
+    for marker in (target, arrow):
+        assert marker.header.frame_id == 'map'
+        assert marker.action == Marker.ADD
+        assert marker.color.a == 1.0
+        assert marker.lifetime.nanosec == 500_000_000
+    assert target.pose.position.x > 5.0
+    assert target.pose.position.y == pytest.approx(0.0)
+    assert arrow.pose.position.x == pytest.approx(5.0)
+    assert arrow.pose.position.y == pytest.approx(0.5)
+    q = arrow.pose.orientation
+    assert 2 * math.atan2(q.z, q.w) == pytest.approx(yaw + drive.steering_angle)
+    driver.drive(5.0, 0.5, yaw, age=2.0)
+    assert all(m.action == Marker.DELETE for m in driver.markers[-1].markers)
 
 
 def test_tiny_raceline_within_lookahead(run):

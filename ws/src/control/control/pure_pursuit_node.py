@@ -5,6 +5,10 @@ On every pose (pose_topic, map frame): find the closest raceline point, pick the
 least one lookahead ahead of the car, steer on the arc through it, drive at the raceline speed
 * speed_scale (capped at max_speed). One /drive per pose.
 
+/pure_pursuit/markers (MarkerArray, map frame): gold lookahead target and cyan arrow
+at the car showing heading + commanded steering angle. Markers expire after 0.5 s
+without an update and are deleted on a stop command.
+
   lookahead = clip(lookahead_time * drive speed, lookahead_min, lookahead_distance)
 
 The closest point is searched within search_window m along the line of the previous one, so it
@@ -30,6 +34,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Bool
+from visualization_msgs.msg import Marker, MarkerArray
 
 from perception.tracks import track_dir
 
@@ -81,6 +86,7 @@ class PurePursuit(Node):
 
         self.create_subscription(PoseStamped, pose_topic, self.pose_callback, 10)
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, '/pure_pursuit/markers', 10)
         if self.avoid:
             self.create_subscription(Path, '/local_path', self.path_callback, 10)
             self.create_subscription(Bool, '/local_path/valid', self.valid_callback, 10)
@@ -108,6 +114,53 @@ class PurePursuit(Node):
         drive.header.stamp = self.get_clock().now().to_msg()
         drive.header.frame_id = 'base_link'
         self.drive_pub.publish(drive)   # speed 0, steering 0
+        self.clear_markers()
+
+    def clear_markers(self):
+        markers = []
+        for marker_id in (0, 1):
+            marker = Marker()
+            marker.header.frame_id = 'map'
+            marker.ns = 'pure_pursuit'
+            marker.id = marker_id
+            marker.action = Marker.DELETE
+            markers.append(marker)
+        self.marker_pub.publish(MarkerArray(markers=markers))
+
+    def publish_markers(self, pose_header, x, y, yaw, target_xy, steering):
+        """Show the target and commanded wheel direction in map, without needing TF."""
+        target = Marker()
+        target.header = pose_header
+        target.ns = 'pure_pursuit'
+        target.id = 0
+        target.type = Marker.SPHERE
+        target.action = Marker.ADD
+        target.pose.position.x = float(target_xy[0])
+        target.pose.position.y = float(target_xy[1])
+        target.pose.position.z = 0.15
+        target.pose.orientation.w = 1.0
+        target.scale.x = target.scale.y = target.scale.z = 0.25
+        target.color.r, target.color.g, target.color.a = 1.0, 0.8, 1.0
+        target.lifetime.sec = 0
+        target.lifetime.nanosec = 500_000_000
+
+        arrow = Marker()
+        arrow.header = pose_header
+        arrow.ns = 'pure_pursuit'
+        arrow.id = 1
+        arrow.type = Marker.ARROW
+        arrow.action = Marker.ADD
+        arrow.pose.position.x = float(x)
+        arrow.pose.position.y = float(y)
+        arrow.pose.position.z = 0.15
+        direction = yaw + steering
+        arrow.pose.orientation.z = float(np.sin(direction / 2))
+        arrow.pose.orientation.w = float(np.cos(direction / 2))
+        arrow.scale.x, arrow.scale.y, arrow.scale.z = 1.0, 0.08, 0.15
+        arrow.color.g, arrow.color.b, arrow.color.a = 1.0, 1.0, 1.0
+        arrow.lifetime.sec = 0
+        arrow.lifetime.nanosec = 500_000_000
+        self.marker_pub.publish(MarkerArray(markers=[target, arrow]))
 
     def find_closest(self, dists, yaw):
         n = len(self.xy)
@@ -127,6 +180,7 @@ class PurePursuit(Node):
         q = msg.pose.orientation
         if np.isnan([q.x, q.y, q.z, q.w]).any():
             self.get_logger().warning('Received invalid quaternion')
+            self.clear_markers()
             return
         if msg.header.frame_id != 'map':
             return self.stop(f"pose in frame '{msg.header.frame_id}', the raceline is in 'map'")
@@ -166,6 +220,7 @@ class PurePursuit(Node):
         target = ahead[far[0]] if far.size else ahead[np.argmax(dists[ahead])]
         target_dist = dists[target]
         if target_dist < 1e-6:
+            self.clear_markers()
             return
 
         # target in the vehicle frame, then the arc through it: curvature = 2 y / d^2
@@ -179,6 +234,7 @@ class PurePursuit(Node):
         drive.drive.steering_angle = float(np.clip(steering, -self.max_steering_angle, self.max_steering_angle))
         drive.drive.speed = float(self.drive_speed(target))
         self.drive_pub.publish(drive)
+        self.publish_markers(msg.header, x, y, yaw, xy[target], drive.drive.steering_angle)
 
 
 def main():
