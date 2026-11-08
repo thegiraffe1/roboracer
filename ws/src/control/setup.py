@@ -1,13 +1,14 @@
 import os
 from glob import glob
-from setuptools import setup
+from setuptools import find_packages, setup
 
 package_name = 'control'
 
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name],
+    packages=find_packages(exclude=['test']),
+    package_data={'control.map2_vendor': ['LICENSE', 'PROVENANCE.md', 'THIRD_PARTY_NOTICES.md']},
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -24,6 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'map2_node = control.map2_node:main',
             'pure_pursuit_node = control.pure_pursuit_node:main',
             'follow_the_gap_node = control.follow_the_gap_node:main',
             'disparity_gap_node = control.disparity_gap_node:main',

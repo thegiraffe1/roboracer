@@ -1,5 +1,6 @@
-# The image only COPYs ws/src/planning/docker (Dockerfile); ws/ is bind-mounted at run time.
+# Docker dependency installers; ws/ is bind-mounted at run time.
 # Allowlist, so ws/build, ws/install, ws/log, ws/tracks and .git stay out of the build context.
 # Add a line here for any new COPY source.
 *
 !ws/src/planning/docker
+!ws/src/control/docker

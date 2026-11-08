@@ -37,5 +37,9 @@ RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc \
 COPY ws/src/planning/docker /tmp/planning_docker
 RUN bash /tmp/planning_docker/install_deps.sh && rm -rf /tmp/planning_docker
 
+# MAP2: pinned acados/CasADi in a separate environment used by map2.launch.py.
+COPY ws/src/control/docker /tmp/control_docker
+RUN bash /tmp/control_docker/install_map2_deps.sh && rm -rf /tmp/control_docker
+
 WORKDIR /root/ws
 CMD ["bash"]

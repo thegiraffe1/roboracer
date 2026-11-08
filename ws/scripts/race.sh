@@ -3,6 +3,7 @@
 #
 #   ws/scripts/race.sh <name> [speed_scale:=0.5] [max_speed:=0.0] [pose_topic:=/localized_pose] [avoid:=false]
 #                          [localizer:=mcl]    particle filter on map.yaml instead of Cartographer localization
+#                          [controller:=map2] experimental MAP2 MPC (default: pp)
 #
 # Needs the bridge running and tracks/<name>/ from ws/scripts/map_track.sh <name>.
 # Resets the sim car first: localization starts from the pose mapping started from. The car waits

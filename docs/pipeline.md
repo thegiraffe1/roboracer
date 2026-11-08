@@ -20,9 +20,48 @@ scripts/map_track.sh <name> --wall-follow           #   ... or let the wall foll
 scripts/map_track.sh <name> --gap-follow            #   ... or follow the gap (experimental: planning can fail, control/README.md)
 ros2 run autodrive_bridge teleop_keyboard           # shell 3: drive the mapping lap(s)            kb
 scripts/race.sh <name> [speed_scale:=0.5]           # localization + pure pursuit                  race
+scripts/race.sh <name> controller:=map2             # localization + experimental MAP2 MPC
 scripts/race.sh <name> avoid:=true                  #   ... passing obstacles the map did not have
 ros2 launch control follow_the_gap.launch.py [speed:=1.0]   # no-map fallback, instead of race.sh   ftg
 ```
+
+MAP2 is installed by the Docker image, including acados v0.5.1 and CasADi 3.6.7
+in `/opt/map2_venv`. Rebuild the image after pulling this setup. To add its
+dependencies to an already running container without restarting the bridge:
+
+```bash
+# Inside the ROS container:
+bash src/control/docker/install_map2_deps.sh
+colcon build --symlink-install --packages-select control
+source install/setup.bash
+scripts/race.sh <name> controller:=map2 speed_scale:=0.5 max_speed:=3.0
+```
+
+Pure pursuit remains the default controller. MAP2 uses `/localized_pose` and
+`/odom`; its 3 m/s model bound applies when the shared `max_speed:=0.0` argument
+is left at its default. An explicit positive `max_speed` overrides that bound.
+`controller:=map2 avoid:=true` is rejected because MAP2 does not follow obstacle
+avoidance paths. For an existing separately running localizer, launch only the
+controller with `ros2 launch control map2.launch.py track:=<name>`.
+That launch accepts `python_executable:=<path>` for a different solver environment;
+`ACADOS_SOURCE_DIR` can override the default `/opt/acados` installation.
+The analytic steering adapter and fixed soft reference corridor are experimental;
+startup and synthetic solve checks do not establish collision-free laps.
+Dependency setup follows the [acados installation instructions](https://docs.acados.org/installation/index.html)
+and [Python interface instructions](https://docs.acados.org/python_interface/index.html#installation).
+
+Setup validation (2026-11-07): the installer ran in the existing Humble container;
+symlink and clean non-symlink control builds passed. The command
+`ROS_DOMAIN_ID=68 python3 -m pytest src/control/test/test_map2.py src/control/test/test_map2_node.py -q`
+passed all 23 tests. A separate `/opt/map2_venv/bin/python3` smoke check completed
+320 real straight-reference solves successfully and verified standalone MAP2
+and combined Cartographer/MAP2 startup on domain 68. Warm solver-only timings
+were median 5.13 ms, P95 7.70 ms, maximum 62.36 ms; the maximum exceeded the
+50 ms control period, so this does not validate deadline reliability. The checks
+used no live sensor inputs and performed no simulator laps. The complete Docker
+image was not rebuilt during these checks. Existing bridge/localizer privileged
+reset and initialization dependencies remain; the default stack is not claimed
+to be ground-truth independent.
 
 `map_track.sh` resets the sim car, starts Cartographer mapping, waits for you to finish driving and
 press Enter (with `--wall-follow` or `--gap-follow`: starts `control wall_follow.launch.py` or `disparity_gap.launch.py` and waits for its laps), runs `save_map`, stops mapping, then runs `ros2 run planning build_raceline <name>`.

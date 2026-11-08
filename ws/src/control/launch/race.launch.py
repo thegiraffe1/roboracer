@@ -1,7 +1,7 @@
-"""Race a mapped track: localization + pure pursuit on its raceline.
+"""Race a mapped track: localization + selected raceline controller.
 
     ros2 launch control race.launch.py track:=<name> [speed_scale:=0.5] [max_speed:=0.0] [pose_topic:=/localized_pose]
-        [avoid:=false] [localizer:=cartographer|mcl]
+        [avoid:=false] [localizer:=cartographer|mcl] [controller:=pp|map2]
 
 Needs tracks/<name>/map.pbstream (map.yaml for localizer:=mcl) and raceline.csv (ws/scripts/map_track.sh
 <name>), and the car at the pose mapping started from (ws/scripts/race.sh resets the sim car there).
@@ -21,6 +21,25 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 from perception.tracks import track_dir
+
+
+def controller(context):
+    name = LaunchConfiguration('controller').perform(context)
+    avoid = LaunchConfiguration('avoid').perform(context).lower() in ('true', '1')
+    if name == 'map2' and avoid:
+        raise ValueError('MAP2 does not support avoid:=true')
+    args = {key: LaunchConfiguration(key) for key in ('track', 'pose_topic', 'speed_scale')}
+    cap = LaunchConfiguration('max_speed').perform(context)
+    if name == 'map2':
+        # MAP2 requires a finite model speed bound. Preserve its 3 m/s default
+        # when the shared race argument uses PP's zero/no-cap sentinel.
+        args['max_speed'] = '3.0' if float(cap) == 0. else cap
+    else:
+        args.update(max_speed=cap, avoid=LaunchConfiguration('avoid'))
+    filename = 'map2.launch.py' if name == 'map2' else 'pure_pursuit.launch.py'
+    return [IncludeLaunchDescription(
+        PathJoinSubstitution([FindPackageShare('control'), 'launch', filename]),
+        launch_arguments=args.items())]
 
 
 def obstacle_spliner(context):
@@ -44,6 +63,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('track', description='track name under ws/tracks/'),
+        DeclareLaunchArgument('controller', default_value='pp', choices=['pp', 'map2'],
+                              description='raceline controller'),
         DeclareLaunchArgument('pose_topic', default_value='/localized_pose',
                               description="a localizer's PoseStamped in the map frame"),
         DeclareLaunchArgument('speed_scale', default_value='0.5', description='drive speed = raceline vx * speed_scale'),
@@ -52,8 +73,8 @@ def generate_launch_description():
                               description='avoid obstacles the map did not have (obstacle_spliner_node)'),
         DeclareLaunchArgument('localizer', default_value='cartographer',
                               description='cartographer: pure localization on map.pbstream; mcl: particle filter on map.yaml'),
+        OpaqueFunction(function=controller),
         include('perception', 'localization.launch.py', ['track'], UnlessCondition(use_mcl)),
         include('perception', 'mcl.launch.py', ['track'], IfCondition(use_mcl)),
-        include('control', 'pure_pursuit.launch.py', ['track', 'pose_topic', 'speed_scale', 'max_speed', 'avoid']),
         OpaqueFunction(function=obstacle_spliner),
     ])
