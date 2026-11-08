@@ -23,7 +23,8 @@ NS = '/autodrive/roboracer_1/'
 BASE_NODES = {'fast_bridge', 'adapter', 'wheel_odom'}
 SENSORS = {'/scan', '/odom', '/sensors/imu/raw'}
 BLOCKED = {'pure_pursuit_node', 'reactive_node', 'wall_follow_node', 'disparity_gap_node',
-           'teleop_keyboard', 'cartographer_node', 'localization_gate', 'mcl', 'obstacle_spliner'}
+           'teleop_keyboard', 'cartographer_node', 'localization_gate', 'mcl', 'obstacle_spliner',
+           'map_node', 'mpcc_node'}
 DISABLED = {'/validation/disabled_ground_truth', '/validation/disabled_reset_hint'}
 
 
@@ -38,6 +39,9 @@ def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--track', default='test_track_v2')
     parser.add_argument('--localizer', choices=['mcl', 'cartographer'], default='mcl')
+    parser.add_argument('--controller', choices=['pure_pursuit', 'map', 'mpcc'], default='pure_pursuit')
+    parser.add_argument('--use-sim-time', choices=['true', 'false'], default='true',
+                        help='match the bridge clock; false for a wall-time bridge')
     parser.add_argument('--speed-scale', type=positive, default=0.3)
     parser.add_argument('--laps', type=int, default=2)
     parser.add_argument('--timeout', type=positive, default=180.0, help='total seconds including setup')
@@ -257,6 +261,8 @@ def run(args, observer_factory=RosObserver, process_factory=RaceProcess):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             track = args.tracks_dir / args.track
             files = ['raceline.csv', 'map.yaml'] + (['map.pbstream'] if args.localizer == 'cartographer' else [])
+            if args.controller in ('map', 'mpcc'):
+                files.append('centerline.csv')
             for name in files:
                 report['artifacts_sha256'][name] = hashlib.sha256((track / name).read_bytes()).hexdigest()
             for image in track.glob('*.pgm'):
@@ -289,12 +295,16 @@ def run(args, observer_factory=RosObserver, process_factory=RaceProcess):
             obs.counter_error = None
             command = ['ros2', 'launch', str(Path(__file__).with_name('validation.launch.py')),
                        'track:=' + args.track, 'localizer:=' + args.localizer,
-                       'speed_scale:=' + str(args.speed_scale)]
+                       'speed_scale:=' + str(args.speed_scale), 'controller:=' + args.controller,
+                       'use_sim_time:=' + args.use_sim_time,
+                       'record_metrics:=' + str(args.controller in ('map', 'mpcc')).lower(),
+                       'log_root:=' + str(directory / 'controller_metrics')]
             report['command'] = command
             process = process_factory(command, dict(os.environ, TRACKS_DIR=str(args.tracks_dir)), log)
             process.start()
             started, ready = time.monotonic(), False
-            expected = {'pure_pursuit_node'} | ({'mcl'} if args.localizer == 'mcl' else
+            controller_node = {'pure_pursuit': 'pure_pursuit_node', 'map': 'map_node', 'mpcc': 'mpcc_node'}[args.controller]
+            expected = {controller_node} | ({'mcl'} if args.localizer == 'mcl' else
                         {'cartographer_node', 'cartographer_occupancy_grid_node', 'localization_gate'})
             while True:
                 observer.spin()

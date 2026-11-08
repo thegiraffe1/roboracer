@@ -1,7 +1,7 @@
-"""Race a mapped track with localization and pure pursuit or MAP.
+"""Race a mapped track with localization and pure pursuit, MAP or MPCC.
 
     ros2 launch control race.launch.py track:=<name> [speed_scale:=0.5] [max_speed:=0.0] [pose_topic:=/localized_pose]
-        [controller:=pure_pursuit|map] [avoid:=false] [localizer:=cartographer|mcl]
+        [controller:=pure_pursuit|map|mpcc] [avoid:=false] [localizer:=cartographer|mcl]
         [adaptive_lookahead:=true] [adaptive_lookahead_cut:=0.1]
         [adaptive_lookahead_min_time:=0.25]
 
@@ -45,11 +45,25 @@ def controller_launch(context, include):
         return [include('control', 'pure_pursuit.launch.py', [
             'track', 'pose_topic', 'speed_scale', 'max_speed', 'avoid',
             'adaptive_lookahead', 'adaptive_lookahead_cut', 'adaptive_lookahead_min_time'])]
-    if controller == 'map':
+    if controller in ('map', 'mpcc'):
         if LaunchConfiguration('avoid').perform(context).lower() in ('true', '1'):
-            raise ValueError('MAP does not support avoid:=true')
-        return [include('control', 'map.launch.py', ['track', 'pose_topic', 'speed_scale', 'max_speed'])]
-    raise ValueError('controller must be pure_pursuit or map')
+            raise ValueError(f'{controller.upper()} does not support avoid:=true')
+        args = ['track', 'pose_topic', 'speed_scale', 'max_speed']
+        if controller == 'mpcc':
+            args += ['record_metrics', 'log_root', 'localizer']
+        actions = [include('control', controller+'.launch.py', args)]
+        if controller == 'map' and LaunchConfiguration('record_metrics').perform(context).lower() in ('true', '1'):
+            actions.append(Node(package='control', executable='controller_metrics_node', output='screen',
+                parameters=[PathJoinSubstitution([FindPackageShare('control'), 'config', 'vehicle.yaml']),
+                            PathJoinSubstitution([FindPackageShare('control'), 'config', 'mpcc.yaml']),
+                            {'controller': 'map', 'track': LaunchConfiguration('track'),
+                             'pose_topic': LaunchConfiguration('pose_topic'),
+                             'speed_scale': ParameterValue(LaunchConfiguration('speed_scale'), value_type=float),
+                             'controller_max_speed': ParameterValue(LaunchConfiguration('max_speed'), value_type=float),
+                             'log_root': LaunchConfiguration('log_root'),
+                             'localizer': LaunchConfiguration('localizer')}]))
+        return actions
+    raise ValueError('controller must be pure_pursuit, map or mpcc')
 
 
 def generate_launch_description():
@@ -66,9 +80,11 @@ def generate_launch_description():
         DeclareLaunchArgument('track', description='track name under ws/tracks/'),
         DeclareLaunchArgument('pose_topic', default_value='/localized_pose',
                               description="a localizer's PoseStamped in the map frame"),
-        DeclareLaunchArgument('speed_scale', default_value='0.5', description='drive speed = raceline vx * speed_scale'),
-        DeclareLaunchArgument('max_speed', default_value='0.0', description='cap on the drive speed [m/s], 0 = no cap'),
+        DeclareLaunchArgument('speed_scale', default_value='0.5', description='raceline speed scale (MPCC: curvature speed envelope scale)'),
+        DeclareLaunchArgument('max_speed', default_value='0.0', description='speed cap [m/s]; 0 = controller default (MPCC: configured cap)'),
         DeclareLaunchArgument('controller', default_value='pure_pursuit'),
+        DeclareLaunchArgument('record_metrics', default_value='true'),
+        DeclareLaunchArgument('log_root', default_value=os.path.expanduser('~/ws/log/mpcc')),
         DeclareLaunchArgument('avoid', default_value='false',
                               description='avoid obstacles the map did not have (obstacle_spliner_node)'),
         DeclareLaunchArgument('localizer', default_value='cartographer',

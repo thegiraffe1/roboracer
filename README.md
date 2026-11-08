@@ -111,6 +111,8 @@ scripts/map_track.sh <name> --wall-follow    # map the track: the wall follower 
                                              # (--gap-follow: follow the gap drives them; experimental, see ws/src/control/README.md)
 scripts/race.sh <name> speed_scale:=0.5      # reset the car, localize on the saved map, pure pursuit on the raceline
 scripts/race.sh <name> avoid:=true           #   ... and pass obstacles the map did not have
+scripts/race.sh <name> controller:=mpcc speed_scale:=0.3  # acados MPCC; centerline + map constraints
+scripts/race.sh <name> controller:=map speed_scale:=0.3   # MAP baseline; one controller at a time
 ```
 
 To drive the mapping laps by hand instead, run `scripts/map_track.sh <name>`, drive 1-2 clean laps with

@@ -1,4 +1,5 @@
 """Validation-only scope around the existing race launch; no privileged localizer hints."""
+import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -7,7 +8,10 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    defaults = {'track': 'test_track_v2', 'localizer': 'mcl', 'speed_scale': '0.3'}
+    defaults = {'track': 'test_track_v2', 'localizer': 'mcl', 'speed_scale': '0.3',
+                'controller': 'pure_pursuit', 'record_metrics': 'false',
+                'use_sim_time': 'true',
+                'log_root': os.path.expanduser('~/ws/log/mpcc')}
     return LaunchDescription([
         *[DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()],
         GroupAction([

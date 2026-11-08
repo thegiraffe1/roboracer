@@ -11,7 +11,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml', 'GPL-3.0.txt', 'MAP-LICENSE.md']),
+        ('share/' + package_name, ['package.xml', 'GPL-3.0.txt', 'MAP-LICENSE.md', 'MPCC.md']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml') + glob('config/*.json') + glob('config/*.npz')),
     ],
@@ -24,6 +24,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'mpcc_node = control.mpcc_node:main',
+            'controller_metrics_node = control.controller_metrics_node:main',
+            'controller_metrics_summary = control.controller_metrics:summary_main',
             'map_node = control.map_node:main',
             'map_generate = control.map_generate:main',
             'pure_pursuit_node = control.pure_pursuit_node:main',

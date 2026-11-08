@@ -1,5 +1,9 @@
 # control
 
+An acados-based kinematic MPCC is available with `controller:=mpcc`; MAP remains
+available with `controller:=map`. See [MPCC.md](MPCC.md) for installation, formulation,
+limits, benchmark logging and safety behavior.
+
 Pure pursuit on a generated raceline, and two followers for the mapping lap(s): the wall follower (the default) and an experimental follow the gap with disparity extension (see below). `pure_pursuit_node` takes the car's pose in the `map` frame,
 finds the closest raceline waypoint, picks the first waypoint one lookahead ahead (lookahead =
 `lookahead_time` * drive speed, clipped to [`lookahead_min`, `lookahead_distance`]), steers on the arc

@@ -39,4 +39,8 @@ COPY ws/src/planning/docker /tmp/planning_docker
 RUN bash /tmp/planning_docker/install_deps.sh && rm -rf /tmp/planning_docker
 
 WORKDIR /root/ws
+
+# MPCC: compiled acados/HPIPM and pinned CasADi in an isolated ROS-aware venv.
+COPY ws/src/control/docker /tmp/control_docker
+RUN bash /tmp/control_docker/install_mpcc_deps.sh && rm -rf /tmp/control_docker
 CMD ["bash"]

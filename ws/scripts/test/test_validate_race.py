@@ -33,9 +33,11 @@ class RunnerTests(unittest.TestCase):
 
     def test_configurable(self):
         args = v.arguments(['--track', 'another', '--localizer', 'cartographer', '--laps', '3',
-                            '--speed-scale', '.2', '--timeout', '90'])
-        self.assertEqual((args.track, args.localizer, args.laps, args.timeout),
-                         ('another', 'cartographer', 3, 90))
+                            '--speed-scale', '.2', '--timeout', '90', '--controller', 'mpcc',
+                            '--use-sim-time', 'false'])
+        self.assertEqual((args.track, args.localizer, args.laps, args.timeout, args.controller),
+                         ('another', 'cartographer', 3, 90, 'mpcc'))
+        self.assertEqual(args.use_sim_time, 'false')
 
     def test_missing_metrics_are_null(self):
         obs = v.Observations(io.StringIO(), lambda: 10)
@@ -60,7 +62,7 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(v.preflight(nodes, pubs, obs))
         obs.seen.update({t: 10 for t in v.SENSORS})
         self.assertTrue(v.preflight(nodes, pubs, obs))
-        for extra, output in ((['teleop_keyboard'], {}), ([], {'/drive': 1}),
+        for extra, output in ((['teleop_keyboard'], {}), (['map_node'], {}), (['mpcc_node'], {}), ([], {'/drive': 1}),
                               ([], {'/validation/disabled_reset_hint': 1})):
             with self.subTest(extra=extra, output=output), self.assertRaises(v.Failure):
                 v.preflight(nodes + extra, dict(pubs, **output), obs)

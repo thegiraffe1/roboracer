@@ -3,3 +3,4 @@
 # Add a line here for any new COPY source.
 *
 !ws/src/planning/docker
+!ws/src/control/docker

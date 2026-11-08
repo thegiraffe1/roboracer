@@ -17,7 +17,10 @@ docker compose exec ros bash -lc 'source install/setup.bash; python3 scripts/val
 ```
 
 Inside an already sourced container shell, the command is simply
-`python3 scripts/validate_race.py`. Use `--help` for options. MCL and speed scale
+`python3 scripts/validate_race.py`. Use `--help` for options. Pass
+`--controller mpcc` to test MPCC, or `--controller map` for MAP. Match the bridge's
+clock with `--use-sim-time false` when it runs on wall time; the default is `true`.
+MCL and speed scale
 0.3 are conservative defaults; Cartographer is selectable. The runner uses the
 current ROS domain and existing vehicle/controller parameters, keeps avoidance
 off, and preserves adaptive lookahead. It does not build, map, optimize, or start

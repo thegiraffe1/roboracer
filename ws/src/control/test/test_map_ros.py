@@ -113,15 +113,19 @@ def test_race_launch_selects_one_controller_and_rejects_unsupported_modes():
     choose = runpy.run_path(path)['controller_launch']
     context = LaunchContext()
     context.launch_configurations['avoid'] = 'false'
+    context.launch_configurations['record_metrics'] = 'false'
     include = lambda package, launch_file, args: launch_file
     context.launch_configurations['controller'] = 'map'
     assert choose(context, include) == ['map.launch.py']
+    context.launch_configurations['controller'] = 'mpcc'
+    assert choose(context, include) == ['mpcc.launch.py']
     context.launch_configurations['controller'] = 'pure_pursuit'
     assert choose(context, include) == ['pure_pursuit.launch.py']
-    context.launch_configurations['controller'] = 'map'
     context.launch_configurations['avoid'] = 'true'
-    with pytest.raises(ValueError, match='avoid'):
-        choose(context, include)
+    for controller in ('map', 'mpcc'):
+        context.launch_configurations['controller'] = controller
+        with pytest.raises(ValueError, match='avoid'):
+            choose(context, include)
     context.launch_configurations['controller'] = 'unknown'
     with pytest.raises(ValueError, match='controller'):
         choose(context, include)
