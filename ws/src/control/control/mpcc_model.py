@@ -35,6 +35,7 @@ class Config:
     r_steering: float = 0.1
     r_progress: float = 0.05
     feasibility_tolerance: float = 0.005
+    speed_feasibility_tolerance: float = 0.005
     dynamics_tolerance: float = 0.02
     max_input_age: float = 0.3
     max_input_skew: float = 0.1
@@ -112,6 +113,20 @@ class KinematicBicycle:
         return (float(np.clip(x0[3] + c.dt*u[0], 0., c.speed_cap)),
                 float(np.clip(x0[4] + c.dt*u[1], -c.max_steering_angle,
                               c.max_steering_angle)))
+
+    def speed_recovery_slack(self, speed, target, elapsed):
+        """Initial overspeed allowance removed by the configured braking ramp.
+
+        Interpolate between control nodes, since acceleration is held constant
+        within each interval. No allowance is created when starting below target.
+        This does not increase command caps or the absolute vehicle speed bound.
+        """
+        excess = max(0., float(speed-target))
+        whole, fraction = np.divmod(np.asarray(elapsed)/self.config.dt, 1.)
+        decrement = self.config.deceleration*self.config.dt
+        before = np.maximum(0., excess-decrement*whole)
+        after = np.maximum(0., excess-decrement*(whole+1))
+        return before*(1-fraction)+after*fraction
 
     def corners(self):
         c = self.config

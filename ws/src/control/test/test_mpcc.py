@@ -1,7 +1,7 @@
 """Behavioral MPCC model/geometry/solver regressions; solver tests need acados."""
-from dataclasses import replace
 import math
 import os
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -11,6 +11,7 @@ import yaml
 from control.mpcc_model import Config, KinematicBicycle
 from control.mpcc_track import Track, FreeMap
 from control.mpcc_solver import AcadosMPCC, check_rollout
+from control.mpcc_timing import Timing
 
 
 def circle(config=None, radius=3., right=.8, left=.6):
@@ -43,6 +44,51 @@ def test_limits_and_bicycle():
     assert np.max(circle(capped).speed) <= 1.
 
 
+def test_qp_failure_discards_failed_iterate_and_warm_start():
+    c = Config()
+    solver = AcadosMPCC.__new__(AcadosMPCC)
+    solver.config, solver.model, solver.track = c, KinematicBicycle(c), circle(c)
+    solver.last_x, solver.last_u = np.zeros((c.horizon_nodes+1, 6)), np.zeros((c.horizon_nodes, 3))
+    solver.solver = Mock()
+    solver.solver.solve.return_value = 4
+    solver.solver.get_stats.side_effect = lambda field: .001 if field == 'time_tot' else np.array([2])
+    result = solver._solve(np.array([3., 0., math.pi/2, 0., 0., 0.]), Timing())
+    assert not result['ok'] and result['reason'] == 'acados status 4'
+    assert 'speed' not in result and 'first_control' not in result
+    assert solver.last_x is None and solver.last_u is None
+    solver.solver.reset.assert_called_once()
+    solver.solver.get.assert_not_called()  # never forward the failed iterate
+
+
+def test_initial_overspeed_allowance_expires_and_does_not_excuse_acceleration(tmp_path):
+    c = Config(speed_scale=.3)
+    model = KinematicBicycle(c)
+    elapsed = np.array([0., .025, .05, .1])
+    assert model.speed_recovery_slack(1.04, .9, elapsed) == pytest.approx([.14, .07, 0., 0.])
+    assert model.speed_recovery_slack(.8, .9, elapsed) == pytest.approx(np.zeros(4))
+    track = circle(c)
+    grid = free_map(tmp_path)
+    steer = math.atan(c.wheelbase/3.)
+    initial = np.array([3., 0., math.pi/2, 1.04, steer, 0.])
+    target = float(track.speed_limit(initial[5]))
+    braking = np.array([[(target-initial[3])/c.dt, 0., .9], [0., 0., .9]])
+    safe, states, metrics = check_rollout(model, track, grid, initial, braking)
+    assert safe, metrics
+    assert states[1, 3] == pytest.approx(target)
+    assert metrics['speed_violation_mps'] == pytest.approx(initial[3]-target)
+    assert metrics['speed_recovery_violation_mps'] <= c.feasibility_tolerance
+    assert metrics['initial_speed_excess_mps'] == pytest.approx(initial[3]-target)
+    assert metrics['violated_constraints'] == []
+    uncorrected = np.array([[0., 0., .9], [0., 0., .9]])
+    safe, _, metrics = check_rollout(model, track, grid, initial, uncorrected)
+    assert not safe and metrics['speed_recovery_violation_mps'] > .1
+    assert [v['constraint'] for v in metrics['violated_constraints']] == ['speed envelope']
+    initial[3] = .8
+    safe, _, metrics = check_rollout(model, track, grid, initial,
+                                    np.array([[2., 0., .9], [2., 0., .9]]))
+    assert not safe and metrics['speed_recovery_violation_mps'] > .09
+
+
 def test_projection_seam_and_asymmetric_widths():
     track = circle()
     before, _, _ = track.project([3., -.03], -0.01+math.pi/2, track.length-.05)
@@ -69,6 +115,7 @@ def test_map_unknown_outside_and_footprint_rejection(tmp_path):
     state = np.array([2.45, 0., math.pi/2, 0., 0., 0.])
     safe, _, metrics = check_rollout(model, track, grid, state, np.zeros((2, 3)))
     assert not safe and metrics['boundary_violation_m'] > 0
+    assert 'track boundary' in [v['constraint'] for v in metrics['violated_constraints']]
     # Corners can be free while an obstacle intersects the middle of the body.
     pixels = np.full((500, 500), 254, dtype=np.uint8)
     pixels[249, 325] = 0
@@ -104,11 +151,17 @@ def test_symbolic_model_and_generated_jacobians_match_numerical():
 def test_acados_progress_warm_start_and_infeasibility(tmp_path):
     c = Config(deadline=.049)
     track = circle(c)
-    solver = AcadosMPCC(c, track, free_map(tmp_path))
+    solver = AcadosMPCC(c, track, free_map(tmp_path), profile=True)
     try:
         state = np.array([3., 0., math.pi/2, 0., 0., 0.])
         result = solver.solve(state)
-        assert result['ok'], result
+        assert result['ok'], {k: result.get(k) for k in (
+            'reason', 'status', 'total_time_s', 'assembly_time_s', 'solver_time_s', 'violated_constraints')}
+        profile = result['profile']
+        assert profile['counts']['footprint_samples'] > profile['counts']['dense_states']
+        assert profile['phases']['validation_map']['wall_s'] >= 0
+        assert sum(p['wall_s'] for p in profile['phases'].values()) <= result['total_time_s']+.001
+        assert all(p['cpu_s'] >= 0 for p in profile['phases'].values())
         assert 0 < result['speed'] <= c.acceleration*c.dt+.001
         assert result['boundary_violation_m'] <= c.feasibility_tolerance
         assert solver.last_u is not None
@@ -116,6 +169,20 @@ def test_acados_progress_warm_start_and_infeasibility(tmp_path):
         second = solver.solve(states[1])
         assert second['ok'], second
         assert second['states'][-1][5] > states[1, 5]
+        # A measured target overshoot must produce a feasible braking command,
+        # while keeping the target, absolute speed and boundary limits intact.
+        solver.reset()
+        overspeed = state.copy()
+        overspeed[3] = c.speed_cap+.1
+        overspeed[4] = math.atan(c.wheelbase/3.)
+        recovery = solver.solve(overspeed)
+        assert recovery['ok'], recovery
+        assert recovery['first_control'][0] < 0
+        assert recovery['speed'] <= c.speed_cap
+        assert recovery['states'][1][3] <= c.speed_cap+c.feasibility_tolerance
+        assert recovery['initial_speed_excess_mps'] == pytest.approx(
+            overspeed[3]-track.speed_limit(overspeed[5]))
+        assert recovery['speed_recovery_violation_mps'] <= c.feasibility_tolerance
         solver.reset()
         assert solver.last_u is None
         bad = state.copy()

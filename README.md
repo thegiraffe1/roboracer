@@ -77,10 +77,17 @@ ros2 launch autodrive_bridge autodrive_launch.py                # alias: sim
 
 Start the simulator, **Connect** to `127.0.0.1:4567` and set **Driving Mode** to **Autonomous**.
 
-Simulator launches use a shared monotonic `/clock` (`use_sim_time:=true`) to prevent host clock
-corrections from corrupting odometry and localization. Direct `ros2 run` consumers need
-`--ros-args -p use_sim_time:=true`; record bags with `--use-sim-time`. For hardware, pass
-`use_sim_time:=false` consistently, or use `USE_SIM_TIME=false` with the mapping/racing scripts.
+`scripts/race.sh` is an AutoDRIVE-only entrypoint: it resets the simulator and defaults to
+wall time (`use_sim_time:=false`) and UDP-only DDS for Docker/WSL. Start a racing bridge with
+`ros2 launch autodrive_bridge autodrive_launch.py use_sim_time:=false`, matching those timestamps.
+If an existing bridge uses `/clock`, use `USE_SIM_TIME=true scripts/race.sh ...` instead.
+`DDS_TRANSPORT=default` restores the middleware's normal transport selection.
+
+The bridge's direct-launch and mapping-script defaults remain `use_sim_time:=true`, using a shared
+monotonic transport `/clock` to avoid host clock corrections. Consumers and bag recording must
+match that clock (`--ros-args -p use_sim_time:=true`, `ros2 bag record --use-sim-time`). This is not
+simulator physics time. Hardware and bag replay need separate entrypoints with their own clock
+and lifecycle configuration; do not use the simulator-resetting `race.sh` for them.
 See [the timing fix and validation plan](docs/hairpin_timing_fix.md) and [MAP handoff](docs/MAP_HANDOFF.md).
 With the stock simulator, restarting the bridge while it is connected makes it reconnect in a loop,
 so **Disconnect** first.

@@ -13,7 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml', 'GPL-3.0.txt', 'MAP-LICENSE.md', 'MPCC.md']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml') + glob('config/*.json') + glob('config/*.npz')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml') + glob('config/*.json') + glob('config/*.npz') + glob('config/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

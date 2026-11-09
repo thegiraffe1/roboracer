@@ -1,5 +1,6 @@
 """End-to-end installed launch + real acados worker on an isolated ROS domain."""
 import math
+import json
 import os
 import signal
 import subprocess
@@ -65,6 +66,9 @@ def test_installed_launch_real_solver_metrics_and_shutdown(tmp_path):
             logs = list((tmp_path/'logs').glob('mpcc-*'))
             assert len(logs) == 1
             assert (logs[0]/'summary.json').exists()
+            config = json.loads((logs[0]/'manifest.json').read_text())['config']
+            assert config['deadline'] == .035 and config['speed_feasibility_tolerance'] == .005
+            assert 'simulator_disable_stops' not in config and 'enforce_rollout_validation' not in config
             assert 'Traceback' not in (tmp_path/'launch.log').read_text()
         finally:
             if process.poll() is None:

@@ -19,6 +19,8 @@ from perception.tracks import track_dir
 
 def nodes(context):
     track = LaunchConfiguration('track').perform(context)
+    log_level = LaunchConfiguration('cartographer_log_level').perform(context)
+    min_log_level = {'info': 0, 'warn': 1}[log_level]
     pbstream = os.path.join(track_dir(track), 'map.pbstream')
     if not os.path.isfile(pbstream):
         raise RuntimeError(f'{pbstream} not found; map the track first (save_map {track})')
@@ -31,7 +33,9 @@ def nodes(context):
                                    '-load_state_filename', pbstream,
                                    '-load_frozen_state', 'true',
                                    # gflags bools take no separate value; localization_gate starts it
-                                   '-start_trajectory_with_default_topics=false'],
+                                   '-start_trajectory_with_default_topics=false',
+                                   f'-minloglevel={min_log_level}'],
+                        ros_arguments=['--log-level', log_level],
                         remappings=[('imu', '/sensors/imu/raw')])
 
     grid = Node(package='cartographer_ros', executable='cartographer_occupancy_grid_node',
@@ -47,5 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         SetParameter(name='use_sim_time', value=ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool)),
         DeclareLaunchArgument('track', description='track name, loads tracks/<track>/map.pbstream'),
+        DeclareLaunchArgument('cartographer_log_level', default_value='info', choices=['info', 'warn'],
+                              description='minimum severity for both Cartographer glog and ROS output'),
         OpaqueFunction(function=nodes),
     ])

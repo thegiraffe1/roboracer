@@ -98,6 +98,7 @@ class Worker:
             elapsed = now-pending['submitted']
             result = message['result']
             result['request_time_s'] = elapsed
+            result['request_deadline_exceeded'] = elapsed >= self.config.deadline
             if elapsed >= self.config.deadline:
                 self.invalidate()
                 return 'fault', dict(result, ok=False, reason='optimizer deadline exceeded')

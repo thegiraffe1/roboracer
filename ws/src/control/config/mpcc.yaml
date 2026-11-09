@@ -27,6 +27,7 @@
     progress_trust: 0.6
     max_lag: 0.25
     feasibility_tolerance: 0.005
+    speed_feasibility_tolerance: 0.005
     dynamics_tolerance: 0.02
     max_input_age: 0.3
     max_input_skew: 0.1

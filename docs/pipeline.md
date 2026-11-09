@@ -46,6 +46,13 @@ status 2 (1: no raceline at all), which `map_track.sh` repeats. `race.sh` prints
 `pure_pursuit_node` logs it and warns unless it is a clean mintime line (also latched on `/raceline/provenance`).
 `race.sh` resets the sim car (localization starts at the map origin = where mapping started) and
 launches `control race.launch.py` (perception `localization.launch.py` + control `pure_pursuit.launch.py`).
+It is for AutoDRIVE racing only and defaults to wall time and UDP-only DDS. The racing bridge
+must also use `use_sim_time:=false`. To retain a bridge already publishing the shared transport
+clock, set `USE_SIM_TIME=true`; `DDS_TRANSPORT=default` restores the normal middleware transport.
+Explicit launch arguments override these wrapper defaults. Mapping/shared launch defaults are
+unchanged. Hardware and bag replay require separate entrypoints without simulator resets.
+Racing defaults to `cartographer_log_level:=warn` for both Google and ROS logging;
+use `cartographer_log_level:=info` to restore detailed scan-matching output.
 With `avoid:=true` it also starts planning's `obstacle_spliner_node`, and pure pursuit steers on its
 `/local_path` (the raceline shifted sideways around an obstacle on `/scan` that the map did not have)
 instead of the raceline, at the raceline's speeds. Each scan is placed with the pose at its own stamp

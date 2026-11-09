@@ -24,6 +24,7 @@ from .input_health import InputHealth
 from .mpcc_model import Config
 from .mpcc_track import Track
 from .mpcc_worker import Worker
+from .mpcc_diagnostics import ControlFault, fault_summary, validate_state_values
 
 
 def stamp_seconds(stamp):
@@ -57,6 +58,7 @@ class MPCC(Node):
         self.failed = True
         self.permanent_fault = ''
         self.last_result = {}
+        self.last_warning_time = None
         self.publisher = self.create_publisher(AckermannDriveStamped, '/drive', 10)
         self.diagnostics = self.create_publisher(DiagnosticArray, '/mpcc/diagnostics', 10)
         self.path_publisher = self.create_publisher(Path, '/mpcc/predicted_path', 1)
@@ -117,16 +119,26 @@ class MPCC(Node):
         msg.status = [status]
         self.diagnostics.publish(msg)
 
-    def stop(self, reason, invalidate=True):
+    def stop(self, reason, invalidate=True, details=None):
         if invalidate and not self.failed:
             self.health.fault()
             self.worker.invalidate()
-        if getattr(self, 'last_stop_reason', None) != reason:
-            self.report(dict(ok=False, reason=reason, event='stop'))
-            self.last_stop_reason = reason
+        # Stop before any diagnostic/logging work. Preserve repeated brake commands.
         self.failed = True
         self.publish()
-        self.get_logger().warning('MPCC stop: '+reason, throttle_duration_sec=2.)
+        if (getattr(self, 'last_stop_reason', None) != reason or
+                (details and 'publication_time_s' in details)):
+            event = dict(ok=False, reason=reason, event='stop')
+            if details:
+                event['details'] = details
+            self.report(event)
+            self.last_stop_reason = reason
+        # ROS's throttle still performs expensive caller lookup on every call.
+        # Gate logging first; stop commands and changed diagnostics stay immediate.
+        now = time.monotonic()
+        if self.last_warning_time is None or now-self.last_warning_time >= 2.:
+            self.last_warning_time = now
+            self.get_logger().warning('MPCC stop: '+reason+fault_summary(details))
 
     def state(self, now, ros_now):
         c = self.config
@@ -145,25 +157,35 @@ class MPCC(Node):
                 raise ValueError('stale or future '+name)
         ps, od = stamp_seconds(self.pose.header.stamp), stamp_seconds(self.odom.header.stamp)
         if abs(ps-od) > c.max_input_skew:
-            raise ValueError('pose/odometry timestamp skew')
+            raise ControlFault('pose/odometry timestamp skew', pose_odom_skew_s=ps-od,
+                               max_input_skew_s=c.max_input_skew,
+                               pose_age_s=ros_now-ps, odom_age_s=ros_now-od)
         if self.last_stamp is not None and (ps < self.last_stamp[0] or od < self.last_stamp[1]):
             raise ValueError('input time reversal')
-        if self.pose.header.frame_id != 'map' or self.odom.child_frame_id != 'base_link':
-            raise ValueError('pose must be map; odometry twist must be base_link')
+        if self.pose.header.frame_id != 'map':
+            raise ControlFault('invalid pose frame', frame=self.pose.header.frame_id, expected='map')
+        if self.odom.child_frame_id != 'base_link':
+            raise ControlFault('invalid odometry child frame', frame=self.odom.child_frame_id, expected='base_link')
         q, position = self.pose.pose.orientation, self.pose.pose.position
         twist = self.odom.twist.twist
         xy = np.array([position.x, position.y])
-        if (not np.isfinite([*xy, q.x, q.y, q.z, q.w, twist.linear.x,
-                             twist.linear.y, twist.angular.z]).all() or
-                abs(np.linalg.norm([q.x, q.y, q.z, q.w])-1.) > .05 or twist.linear.x < 0):
-            raise ValueError('invalid pose/quaternion/odometry')
-        if twist.linear.x > c.speed_cap+c.feasibility_tolerance:
-            raise ValueError('measured speed exceeds configured MPCC cap')
+        validate_state_values(xy, [q.x, q.y, q.z, q.w],
+                              [twist.linear.x, twist.linear.y, twist.angular.z])
+        # A measured overshoot of the scaled target is a braking problem, not an
+        # invalid localization sample. The solver must explicitly recover it;
+        # readings beyond the absolute configured limit still fault immediately.
+        if twist.linear.x > c.max_speed+c.feasibility_tolerance:
+            raise ValueError('measured speed exceeds absolute MPCC limit')
         if self.last_xy is not None and np.linalg.norm(xy-self.last_xy) > c.max_pose_jump:
             raise ValueError('implausible pose jump')
         yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
         fault = self.health.accept(yaw, (ps, od), now)
         if fault:
+            if fault == 'waiting for consistent recovery samples':
+                raise ControlFault(fault, recovery_samples=self.health.valid_count,
+                                   recovery_required_samples=self.health.recovery_samples,
+                                   recovery_elapsed_s=now-self.health.valid_since,
+                                   recovery_required_s=self.health.recovery_seconds)
             raise ValueError(fault)
         theta, contour, _ = self.track.project(xy, yaw, self.previous)
         if abs(contour) > c.max_offset:
@@ -179,6 +201,7 @@ class MPCC(Node):
 
     def tick(self):
         now = time.monotonic()
+        input_fault = True
         try:
             event = self.worker.poll(now)
             if self.worker.hung(now) and not self.permanent_fault:
@@ -194,10 +217,12 @@ class MPCC(Node):
                 result = dict(event[1], ok=False)
                 self.last_result = result
                 self.report(result)
-                self.health.fault()
                 self.worker.invalidate()
-                return self.stop(result.get('reason', 'optimizer failure'))
+                # A failed candidate invalidates optimizer state, not healthy sensors.
+                return self.stop(result.get('reason', 'optimizer failure'), invalidate=False, details={
+                    'violated_constraints': result.get('violated_constraints', [])})
             state = self.state(now, ros_now)
+            input_fault = False
             if event and event[0] in ('fault', 'result'):
                 result = event[1]
                 result['ok'] = bool(result.get('ok', False))
@@ -208,11 +233,16 @@ class MPCC(Node):
                         abs(result['steering']) > self.config.max_steering_angle or
                         abs(result['steering']-self.last_steer) > self.config.steering_rate*self.config.dt+1e-6):
                     raise ValueError('optimizer command exceeds actuator limits')
-                if result.get('request_time_s', 0.)+time.monotonic()-now >= self.config.deadline:
-                    raise ValueError('publication deadline exceeded')
+                elapsed = result.get('request_time_s', 0.)+time.monotonic()-now
+                if elapsed >= self.config.deadline:
+                    raise ControlFault('publication deadline exceeded', publication_time_s=elapsed,
+                                       request_time_s=result.get('request_time_s'),
+                                       deadline_s=self.config.deadline,
+                                       deadline_overrun_s=elapsed-self.config.deadline)
                 ros_after = self.get_clock().now().nanoseconds*1e-9
                 if any(not 0 <= ros_after-stamp_seconds(msg.header.stamp) <= self.config.max_input_age
                        for msg in (self.pose, self.odom)):
+                    input_fault = True
                     raise ValueError('inputs expired before publication')
                 self.last_steer = result['steering']
                 self.last_stop_reason = None
@@ -237,9 +267,9 @@ class MPCC(Node):
             waiting = str(exc).startswith('waiting for consistent')
             if not waiting or self.worker.pending is not None:
                 self.worker.invalidate()
-            if not waiting:
+            if input_fault and not waiting:
                 self.health.fault()
-            self.stop(str(exc), invalidate=False)
+            self.stop(str(exc), invalidate=False, details=getattr(exc, 'details', None))
 
     def publish_path(self, states):
         path = Path()

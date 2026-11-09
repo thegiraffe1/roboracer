@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Race a mapped track: localization (Cartographer, or the MCL particle filter) + pure pursuit on its minimum-time raceline.
+# AutoDRIVE-only racing: reset the simulator, localize, and run the selected controller.
+# Hardware and bag replay must use separate entrypoints without simulator reset behavior.
+# Defaults: host wall time and UDP-only Fast DDS for the Docker/WSL setup.
+# The bridge must use the same clock. Override with USE_SIM_TIME/DDS_TRANSPORT or launch args.
 #
 #   ws/scripts/race.sh <name> [speed_scale:=0.5] [max_speed:=0.0] [pose_topic:=/localized_pose] [avoid:=false]
 #                          [localizer:=mcl]    particle filter on map.yaml instead of Cartographer localization
@@ -12,6 +15,9 @@ set -eo pipefail
 
 name=${1:?usage: race.sh <track name> [launch args]}
 shift
+# Scope deployment defaults to racing; common.sh's mapping defaults stay unchanged.
+USE_SIM_TIME=${USE_SIM_TIME:-false}
+dds_transport=${DDS_TRANSPORT:-udp}
 source "$(dirname "$0")/common.sh"
 
 for f in map.pbstream raceline.csv; do
@@ -33,4 +39,4 @@ fi
 
 reset_sim_car
 
-exec ros2 launch control race.launch.py track:="$name" use_sim_time:="$sim_time" "$@"
+exec ros2 launch control race.launch.py track:="$name" use_sim_time:="$sim_time" dds_transport:="$dds_transport" "$@"

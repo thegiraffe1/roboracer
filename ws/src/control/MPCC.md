@@ -25,9 +25,17 @@ scripts/race.sh <track> controller:=map speed_scale:=0.3 record_metrics:=true
 ```
 
 Stop the current launch before starting the next one. `race.sh` resets the simulator;
-direct launches do not. MPCC requires `centerline.csv`, `map.yaml` and the referenced
+it is AutoDRIVE-only and now defaults to wall time and UDP-only DDS. The bridge must
+use the same clock (`autodrive_launch.py use_sim_time:=false` for this mode).
+`USE_SIM_TIME=true` selects an existing shared-clock bridge; `DDS_TRANSPORT=default`
+restores the normal middleware transport. Hardware/replay need separate entrypoints.
+Direct launches do not reset the simulator. MPCC requires `centerline.csv`, `map.yaml` and the referenced
 map image. The race script still requires `map.pbstream` and `raceline.csv`; existing
 localization and track formats are unchanged. `avoid:=true` is rejected for MPCC.
+
+Racing sets Cartographer's Google and ROS logging to WARN, retaining warnings and
+errors. Restore scan-matching INFO output with `cartographer_log_level:=info`.
+Standalone localization keeps its INFO default; mapping logging is unchanged.
 
 For an already localized car:
 
@@ -44,6 +52,17 @@ unlimited speed. The absolute cap applies after scaling the nominal speed envelo
 matching MAP's `max_speed` semantics. `use_sim_time:=true` requires the bridge's transport `/clock`;
 use `false` consistently on hardware or when the bridge does not publish it.
 Controller parameters are read at startup; restart the controller to change them.
+
+If the bridge has fresh sensors but Cartographer receives no TF or tracked poses
+in Docker/WSL, the optional Fast DDS UDP transport can avoid shared-memory delivery
+failures. It preserves topic QoS and does not bypass localization gating:
+
+```bash
+scripts/race.sh <track> controller:=mpcc speed_scale:=0.3
+```
+
+The direct ROS launch default `dds_transport:=default` preserves the existing
+middleware configuration; the simulator racing wrapper explicitly selects `udp`.
 
 `speed_scale` has different meanings: MAP scales raceline waypoint speeds; MPCC
 scales its centerline curvature/absolute speed envelope. Equal scales are not
@@ -131,16 +150,49 @@ The ROS supervisor alone publishes `/drive`. A spawned process owns acados;
 bounded queues permit only one in-flight request. Sequence/epoch checks reject
 reset, invalidated and late results. A steady-clock 5 ms polling timer keeps safety
 checks running when ROS time stalls. Measured state checks include frame, quaternion,
-freshness, timestamp advancement/skew, pose jumps, heading recovery and speed cap.
+freshness, timestamp advancement/skew, pose jumps, heading recovery and absolute speed limit.
 Small pose delays are aligned using measured forward speed/yaw rate.
+This currently extrapolates the latest pose with the latest odometry; it does not
+interpolate buffered observations to a common timestamp. Skew faults report the
+signed pose-minus-odometry stamp difference, its limit, and both input ages.
+Position, quaternion, odometry, and frame failures have distinct reasons; a negative
+forward odometry reading is not reported as a corrupt pose.
+
+Measured overshoot of the scaled target speed is handled as a braking initial
+condition rather than invalid localization. A fixed initial speed allowance decays
+at the configured deceleration between prediction nodes; the dense validator checks
+the same time-dependent bound. It is not a solver-selected soft constraint. Commands
+remain capped, and the configured absolute `max_speed`, actuator, lateral-acceleration
+and boundary limits remain enforced. Raw target overshoot and recovery-bound violation
+are logged separately. Negative/nonfinite odometry still stops the controller.
 
 Default control period is 50 ms, horizon 30 steps, and request deadline 35 ms.
 The solver checks its own total duration and the supervisor checks IPC/publication
 latency again. An overrun, bad solve, invalid rollout or stale state publishes
 repeated zero-speed commands while holding the last bounded steering. Resume needs
-consistent fresh input samples and a new valid timely solve. There is no automatic
-handoff to MAP. A worker hung for 0.5 s is terminated and latches a fault requiring
-controller restart; it is not repeatedly rebuilt while the vehicle is moving.
+valid fresh inputs and a new valid timely solve. Sensor/clock faults additionally
+require 0.25 seconds and three advancing pose/odometry pairs; computation/trajectory
+failures invalidate the optimizer without resetting that sensor recovery latch.
+Recovery warnings show the fresh-pair count and elapsed recovery duration. There is
+no automatic handoff to MAP. A worker hung for 0.5 s is terminated and latches a
+fault requiring controller restart.
+
+The original 35 ms deadline and 0.005 m/s speed-envelope acceptance tolerance are
+restored. All rollout, input-validity, publication, worker-deadline and shutdown
+checks are enforced. Experimental validation/runtime-stop bypass code has been
+removed, including acceptance of failed QP iterates and reuse of failed warm starts.
+The briefly tested 45 ms deadline, 0.02 m/s envelope tolerance, and disabled stops
+are not the shipped behavior. See `docs/mpcc_safety_restoration_20261108.md` for
+experiment observations, verification and remaining limitations.
+
+Publication deadline faults record `publication_time_s` (request latency plus
+supervisor checks), `deadline_s`, and `deadline_overrun_s` in stop-event details;
+console warnings show total/budget/lateness in milliseconds. Earlier logs did not
+capture this elapsed time at the publication check, so their exact publication
+overrun cannot be reconstructed. Rollout diagnostics retain the individual metrics
+and add `violated_constraints`, listing each failed check, excess over the bound,
+tolerance, and unit. A successful RTI QP status is not proof of nonlinear feasibility:
+the independent dense rollout must also pass before any candidate is published.
 
 Steering state is estimated from the last command. Longitudinal dynamics assume
 acceleration tracking through the existing speed PI/ramp, whose default limits are

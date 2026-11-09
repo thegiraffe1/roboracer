@@ -8,11 +8,14 @@ import numpy as np
 
 from .mpcc_model import KinematicBicycle
 from .mpcc_track import footprint_points
+from .mpcc_timing import Timing
+from .mpcc_diagnostics import rollout_violations
 
 
-def check_rollout(model, track, free_map, initial, controls, predicted=None):
+def check_rollout(model, track, free_map, initial, controls, predicted=None, timing=None):
     """Return nonlinear violations in SI units; reject independently of solver status."""
     c = model.config
+    timing = timing or Timing()
     controls = np.asarray(controls, dtype=float)
     if (not np.isfinite(initial).all() or not np.isfinite(controls).all() or
             controls.ndim != 2 or controls.shape[1] != model.nu):
@@ -21,7 +24,7 @@ def check_rollout(model, track, free_map, initial, controls, predicted=None):
     upper = np.array([c.acceleration, c.steering_rate, c.speed_cap])+c.feasibility_tolerance
     if (np.any(controls < lower) or np.any(controls > upper) or
             abs(initial[4]) > c.max_steering_angle+c.feasibility_tolerance or
-            not 0 <= initial[3] <= c.speed_cap+c.feasibility_tolerance):
+            not 0 <= initial[3] <= c.max_speed+c.feasibility_tolerance):
         raise ValueError('rollout input exceeds actuator bounds')
     states = [np.array(initial, copy=True)]
     defects = 0.
@@ -31,51 +34,70 @@ def check_rollout(model, track, free_map, initial, controls, predicted=None):
             defects = max(defects, float(np.max(abs(next_state-predicted[k+1]))))
         states.append(next_state)
     states = np.asarray(states)
+    timing.mark('validation_rollout')
     speed = np.maximum(np.maximum(states[:-1, 3], states[1:, 3]), .1)
     steering = np.maximum(abs(states[:-1, 4]), abs(states[1:, 4]))
     body_radius = np.hypot(max(c.body_front, c.body_rear), c.body_width/2)
     corner_speed = speed*(1+abs(np.tan(steering))/c.wheelbase*body_radius)
     counts = np.maximum(2, np.ceil(corner_speed*c.dt/(free_map.resolution*.5)).astype(int))
     times = np.concatenate([c.dt*np.arange(1, count+1)/count for count in counts])
+    elapsed = np.r_[0., np.repeat(np.arange(len(controls))*c.dt, counts)+times]
     dense = np.vstack([states[0], model.step(np.repeat(states[:-1], counts, axis=0),
                                             np.repeat(controls, counts, axis=0), times[:, None])])
     if not np.isfinite(dense).all() or not np.isfinite(controls).all():
         raise ValueError('nonfinite rollout')
+    timing.count('dense_states', len(dense))
+    timing.mark('validation_dense_states')
     r, t, n, _, right, left = track.sample(dense[:, 5])
     corners = footprint_points(dense, c, max(c.body_front+c.body_rear, c.body_width))
     lateral = np.einsum('nki,ni->nk', corners-r[:, None, :], n)
     corridor = max(0., float(np.max(lateral-left[:, None]+c.clearance)),
                    float(np.max(-right[:, None]+c.clearance-lateral)))
     lag = np.einsum('ni,ni->n', dense[:, :2]-r, t)
+    timing.mark('validation_corridor')
     points = footprint_points(dense, c, free_map.resolution*.5)
+    timing.count('footprint_samples', points.shape[0]*points.shape[1])
+    timing.mark('validation_footprint')
     min_clearance = float(np.min(free_map.clearance(points)))
+    timing.mark('validation_map')
     map_violation = max(0., c.clearance-min_clearance)
-    actuator = max(0., float(np.max(abs(dense[:, 4]))-c.max_steering_angle),
-                   float(np.max(controls[:, 0])-c.acceleration),
-                   float(-c.deceleration-np.min(controls[:, 0])),
-                   float(np.max(abs(controls[:, 1]))-c.steering_rate),
-                   float(-np.min(controls[:, 2])),
-                   float(np.max(controls[:, 2])-c.speed_cap),
-                   float(-np.min(dense[:, 3])))
-    speed_violation = max(0., float(np.max(dense[:, 3]-track.speed_limit(dense[:, 5]))))
+    actuator_metrics = dict(
+        steering_angle_violation_rad=max(0., float(np.max(abs(dense[:, 4]))-c.max_steering_angle)),
+        acceleration_violation_mps2=max(0., float(np.max(controls[:, 0])-c.acceleration)),
+        braking_violation_mps2=max(0., float(-c.deceleration-np.min(controls[:, 0]))),
+        steering_rate_violation_radps=max(0., float(np.max(abs(controls[:, 1]))-c.steering_rate)),
+        progress_speed_violation_mps=max(0., float(-np.min(controls[:, 2])),
+                                         float(np.max(controls[:, 2])-c.speed_cap)),
+        reverse_speed_violation_mps=max(0., float(-np.min(dense[:, 3]))))
+    actuator = max(actuator_metrics.values())
+    speed_limits = track.speed_limit(dense[:, 5])
+    speed_violation = max(0., float(np.max(dense[:, 3]-speed_limits)))
+    initial_target = float(track.speed_limit(initial[5]))
+    recovery = model.speed_recovery_slack(initial[3], initial_target, elapsed)
+    recovery_violation = max(0., float(np.max(dense[:, 3]-speed_limits-recovery)))
+    absolute_speed_violation = max(0., float(np.max(dense[:, 3])-c.max_speed))
     ay = dense[:, 3]**2*np.tan(dense[:, 4])/c.wheelbase
     lateral_violation = max(0., float(np.max(abs(ay))-c.lateral_acceleration))
     lag_violation = max(0., float(np.max(abs(lag))-c.max_lag))
     metrics = dict(boundary_violation_m=corridor, map_violation_m=map_violation,
                    min_clearance_m=min_clearance, actuator_violation=actuator,
                    speed_violation_mps=speed_violation,
+                   initial_speed_excess_mps=max(0., float(initial[3]-initial_target)),
+                   speed_recovery_violation_mps=recovery_violation,
+                   absolute_speed_violation_mps=absolute_speed_violation,
                    lateral_acceleration_violation_mps2=lateral_violation,
-                   lag_violation_m=lag_violation, dynamics_defect=defects)
-    safe = (max(corridor, map_violation, actuator, speed_violation,
-                lateral_violation, lag_violation) <= c.feasibility_tolerance and
-            defects <= c.dynamics_tolerance)
+                   lag_violation_m=lag_violation, dynamics_defect=defects, **actuator_metrics)
+    metrics['violated_constraints'] = rollout_violations(metrics, c)
+    safe = not metrics['violated_constraints']
+    timing.mark('validation_limits')
     return safe, states, metrics
 
 
 class AcadosMPCC:
-    def __init__(self, config, track, free_map, model_factory=KinematicBicycle):
+    def __init__(self, config, track, free_map, model_factory=KinematicBicycle, profile=False):
         self.config, self.track, self.free_map = config, track, free_map
         self.model = model_factory(config)
+        self.profile = profile
         self.last_x = self.last_u = None
         self.directory = tempfile.TemporaryDirectory(prefix='autodrive_mpcc_')
         self._build()
@@ -191,21 +213,26 @@ class AcadosMPCC:
         the request deadline, and the parent additionally charges IPC latency.
         """
         enabled = gc.isenabled()
+        timing = Timing(self.profile)
         gc.disable()
         start = time.monotonic()
         try:
-            result = self._solve(initial)
+            result = self._solve(initial, timing)
         finally:
             gc.collect(0)
             if enabled:
                 gc.enable()
+        timing.mark('gc')
         result['total_time_s'] = time.monotonic()-start
-        if result['ok'] and result['total_time_s'] >= self.config.deadline:
+        result['computation_deadline_exceeded'] = result['total_time_s'] >= self.config.deadline
+        if result['ok'] and result['computation_deadline_exceeded']:
             result.update(ok=False, reason='optimizer computation deadline exceeded')
             self.reset()
+        if self.profile:
+            result['profile'] = timing.result()
         return result
 
-    def _solve(self, initial):
+    def _solve(self, initial, timing):
         start = time.monotonic()
         initial = self.model.initialize(initial)
         if not np.isfinite(initial).all():
@@ -214,7 +241,9 @@ class AcadosMPCC:
         # projection. Measured projection remains separate for lap evaluation.
         if self.last_x is not None and abs(self.last_x[1, 5]-initial[5]) < self.config.max_lag:
             initial[5] = self.last_x[1, 5]
+        timing.count('cold_start', self.last_u is None)
         states, controls = self.seed(initial)
+        timing.mark('seed')
         c, n = self.config, self.config.horizon_nodes
         # Warm-start primal states/controls explicitly. Do not reuse unshifted duals.
         r, tangent, normal, _, right, left = self.track.sample(states[:, 5])
@@ -222,6 +251,10 @@ class AcadosMPCC:
                                       self.track.speed_limit(states[:, 5])])
         preview = states[:, 5, None]+np.linspace(-c.progress_trust, c.progress_trust, 9)
         limits = np.min(self.track.speed_limit(preview), axis=1)
+        recovery = self.model.speed_recovery_slack(initial[3], self.track.speed_limit(initial[5]),
+                                                    np.arange(n+1)*c.dt)
+        limits = np.minimum(c.max_speed, limits+recovery)
+        timing.mark('reference_parameters')
         for k in range(n+1):
             self.solver.set(k, 'x', states[k])
             self.solver.set(k, 'p', parameters[k])
@@ -236,7 +269,9 @@ class AcadosMPCC:
         self.solver.constraints_set(0, 'lbx', initial)
         self.solver.constraints_set(0, 'ubx', initial)
         assembly = time.monotonic()-start
+        timing.mark('acados_updates')
         status = self.solver.solve()
+        timing.mark('acados_solve')
         solve_time = float(self.solver.get_stats('time_tot'))
         result = dict(status=int(status), assembly_time_s=assembly, solver_time_s=solve_time)
         result['qp_iterations'] = int(np.sum(self.solver.get_stats('qp_iter')))
@@ -247,13 +282,20 @@ class AcadosMPCC:
         result['lag_error_m'] = float((initial[:2]-point) @ tangent)
         if status != 0:
             self.reset()
+            timing.mark('failure_cleanup')
             return dict(result, ok=False, reason=f'acados status {status}',
                         total_time_s=time.monotonic()-start)
         states = np.array([self.solver.get(k, 'x') for k in range(n+1)])
         controls = np.array([self.solver.get(k, 'u') for k in range(n)])
+        if not np.isfinite(states).all() or not np.isfinite(controls).all():
+            self.reset()
+            return dict(result, ok=False, reason='nonfinite optimizer trajectory',
+                        total_time_s=time.monotonic()-start)
         result['first_control'] = controls[0].tolist()
+        timing.mark('acados_extract')
         valid, rollout, metrics = check_rollout(self.model, self.track, self.free_map,
-                                               initial, controls, states)
+                                               initial, controls, states, timing)
+        metrics.update(rollout_feasible=bool(valid), rollout_validation_enforced=True)
         elapsed = time.monotonic()-start
         reason = 'nonlinear rollout violation' if not valid else ''
         if elapsed >= c.deadline:
@@ -264,9 +306,11 @@ class AcadosMPCC:
         else:
             self.reset()
         speed, steer = self.model.command(initial, controls[0])
-        return dict(result, **metrics, ok=valid, states=rollout.tolist(),
+        result = dict(result, **metrics, ok=valid, states=rollout.tolist(),
                     speed=speed, steering=steer, total_time_s=elapsed,
                     reason=reason)
+        timing.mark('finalize')
+        return result
 
     def close(self):
         # Release generated shared library before cleaning its private directory.

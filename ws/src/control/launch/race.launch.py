@@ -18,7 +18,7 @@ pure_pursuit_node), for tight corners at full speed.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node, SetParameter
@@ -76,6 +76,11 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('dds_transport', default_value='default', choices=['default', 'udp'],
+                              description='udp: disable Fast DDS shared memory for this launch'),
+        SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE',
+            PathJoinSubstitution([FindPackageShare('control'), 'config', 'fastdds_udp.xml']),
+            condition=IfCondition(PythonExpression(["'", LaunchConfiguration('dds_transport'), "' == 'udp'"]))),
         SetParameter(name='use_sim_time', value=ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool)),
         DeclareLaunchArgument('track', description='track name under ws/tracks/'),
         DeclareLaunchArgument('pose_topic', default_value='/localized_pose',
@@ -89,13 +94,15 @@ def generate_launch_description():
                               description='avoid obstacles the map did not have (obstacle_spliner_node)'),
         DeclareLaunchArgument('localizer', default_value='cartographer',
                               description='cartographer: pure localization on map.pbstream; mcl: particle filter on map.yaml'),
+        DeclareLaunchArgument('cartographer_log_level', default_value='warn', choices=['info', 'warn'],
+                              description='Cartographer verbosity; info restores scan-matching details'),
         DeclareLaunchArgument('adaptive_lookahead', default_value='true',
                               description='cap the lookahead by the curvature of the raceline'),
         DeclareLaunchArgument('adaptive_lookahead_cut', default_value='0.1',
                               description='with adaptive_lookahead: corner cut [m], lookahead <= sqrt(2 cut / kappa)'),
         DeclareLaunchArgument('adaptive_lookahead_min_time', default_value='0.25',
                               description='with adaptive_lookahead: but lookahead >= min_time x speed [s]'),
-        include('perception', 'localization.launch.py', ['track'], UnlessCondition(use_mcl)),
+        include('perception', 'localization.launch.py', ['track', 'cartographer_log_level'], UnlessCondition(use_mcl)),
         include('perception', 'mcl.launch.py', ['track'], IfCondition(use_mcl)),
         OpaqueFunction(function=lambda context: controller_launch(context, include)),
         OpaqueFunction(function=obstacle_spliner),

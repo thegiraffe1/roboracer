@@ -14,6 +14,9 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.executors import SingleThreadedExecutor
 from launch import LaunchContext
+from launch.actions import SetEnvironmentVariable
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from control.map_node import MAP
 
@@ -129,3 +132,22 @@ def test_race_launch_selects_one_controller_and_rejects_unsupported_modes():
     context.launch_configurations['controller'] = 'unknown'
     with pytest.raises(ValueError, match='controller'):
         choose(context, include)
+
+
+def test_race_udp_transport_is_optional_and_profile_is_installed():
+    path = os.path.join(os.path.dirname(__file__), '..', 'launch', 'race.launch.py')
+    description = runpy.run_path(path)['generate_launch_description']()
+    action = next(a for a in description.entities if isinstance(a, SetEnvironmentVariable))
+    context = LaunchContext()
+    context.launch_configurations['dds_transport'] = 'default'
+    assert not action.condition.evaluate(context)
+    context.launch_configurations['dds_transport'] = 'udp'
+    assert action.condition.evaluate(context)
+    action.execute(context)
+    profile = Path(context.environment['FASTRTPS_DEFAULT_PROFILES_FILE'])
+    assert profile.is_file()
+    root = ET.parse(profile).getroot()
+    ns = {'dds': 'http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles'}
+    assert root.find('.//dds:type', ns).text == 'UDPv4'
+    assert root.find('.//dds:useBuiltinTransports', ns).text == 'false'
+    assert root.find('dds:participant', ns).attrib['is_default_profile'] == 'true'
